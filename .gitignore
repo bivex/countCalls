@@ -1,0 +1,4 @@
+syscall_counter
+*.o
+*.dSYM/
+.DS_Store
