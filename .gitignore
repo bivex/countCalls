@@ -3,6 +3,10 @@ syscall_counter
 syscall_callgraph
 demo_app
 
+# Avalonia Build output
+**/bin/
+**/obj/
+
 # Generated graph files
 *.dot
 *.png

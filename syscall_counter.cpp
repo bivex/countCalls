@@ -200,6 +200,8 @@ int main(int argc, char* argv[]) {
 
     (void)dtrace_setopt(g_dtp, "destructive", nullptr);
     (void)dtrace_setopt(g_dtp, "quiet",       "1");
+    (void)dtrace_setopt(g_dtp, "aggrate",     "10ms");
+    (void)dtrace_setopt(g_dtp, "switchrate",  "10ms");
 
     dtrace_handle_err(g_dtp, dtrace_err_cb, nullptr);
 
