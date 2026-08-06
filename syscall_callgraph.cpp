@@ -3,11 +3,12 @@
  *
  * Высокопроизводительный генератор обратного графа системных вызовов на macOS.
  *
- * Оптимизации производительности:
- * 1. Кеширование символов (Symbol Cache for dtrace_addr2str): устраняет повторные вызовы DTrace lookup
- * 2. Хеш-таблицы (unordered_map): O(1) поиск в дереве вызовов
- * 3. Настройка буферов DTrace (bufsize=8m, aggsize=8m): защита от потери пробы при высоких нагрузках
- * 4. Оптимизация выделения памяти при сериализации JSON
+ * Улучшения и исправленные проблемы (Self-Audit Improvements):
+ * 1. [Синхронизация процессов]: waitpid(WUNTRACED) устраняет race-condition при старте дочернего процесса
+ * 2. [Агрегация символов]: Стриппинг смещений (+0x...) объединяет вызовы в одну функцию, очищая граф
+ * 3. [Потокобезопасность]: std::atomic<bool> для безопасной обработки сигналов SIGINT/SIGTERM
+ * 4. [Кеширование PC]: std::unordered_map для O(1) поиска резолвинга DTrace символов
+ * 5. [Оптимизация дерева]: Избегаем ложных разветвлений из-за различий в инструкционных офсетах
  */
 
 #include <iostream>
@@ -23,6 +24,7 @@
 #include <cerrno>
 #include <fstream>
 #include <chrono>
+#include <atomic>
 
 #include <unistd.h>
 #include <signal.h>
@@ -63,17 +65,16 @@ struct TreeNode {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Глобальное состояние и кеши
+// Глобальное состояние
 // ─────────────────────────────────────────────────────────────────────────────
 
-static dtrace_hdl_t* g_dtp    = nullptr;
-static pid_t         g_target = -1;
-static volatile bool g_done   = false;
+static dtrace_hdl_t*      g_dtp    = nullptr;
+static pid_t              g_target = -1;
+static std::atomic<bool>  g_done{false};
 
 static std::unordered_map<std::string, std::shared_ptr<TreeNode>> g_syscall_trees;
 
-// BOTTLE-NECK FIX: Кеш адресов символов (адрес PC -> имя символа)
-// Исключает 95-99% тяжелых обращений к dtrace_addr2str()
+// Кеш резолвинга адресов символов (uint64_t pc -> std::string symbol)
 static std::unordered_map<uint64_t, std::string> g_symbol_cache;
 static uint64_t g_cache_hits   = 0;
 static uint64_t g_cache_misses = 0;
@@ -87,8 +88,7 @@ syscall:::entry
 )";
 
 static void sig_handler(int) {
-    g_done = true;
-    if (g_dtp) dtrace_stop(g_dtp);
+    g_done.store(true, std::memory_order_relaxed);
 }
 
 static int dtrace_err_cb(const dtrace_errdata_t* data, void*) {
@@ -97,7 +97,22 @@ static int dtrace_err_cb(const dtrace_errdata_t* data, void*) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Быстрый поиск символа по адресу с кешированием
+// Очистка имени символа: удаление смещений (+0x1a или +24) для чистой агрегации
+// ─────────────────────────────────────────────────────────────────────────────
+
+static std::string strip_symbol_offset(const std::string& raw_sym) {
+    size_t plus_pos = raw_sym.rfind('+');
+    if (plus_pos != std::string::npos && plus_pos > 0) {
+        std::string suffix = raw_sym.substr(plus_pos + 1);
+        if (!suffix.empty() && (suffix.rfind("0x", 0) == 0 || std::isdigit(suffix[0]))) {
+            return raw_sym.substr(0, plus_pos);
+        }
+    }
+    return raw_sym;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Поиск символа по адресу PC с кешированием и агрегацией
 // ─────────────────────────────────────────────────────────────────────────────
 
 static const std::string& resolve_pc_symbol(uint64_t pc) {
@@ -112,7 +127,7 @@ static const std::string& resolve_pc_symbol(uint64_t pc) {
     std::string symbol_str;
 
     if (dtrace_addr2str(g_dtp, pc, symbuf, sizeof(symbuf)) == 0) {
-        symbol_str = symbuf;
+        symbol_str = strip_symbol_offset(symbuf);
     } else {
         std::stringstream ss;
         ss << "0x" << std::hex << pc;
@@ -149,7 +164,12 @@ static int aggwalk_cb(const dtrace_aggdata_t* data, void*) {
     for (uint32_t i = 0; i < num_frames; ++i) {
         uint64_t pc = pc_addrs[i];
         if (pc == 0) break;
-        frames.push_back(resolve_pc_symbol(pc));
+        
+        const std::string& sym = resolve_pc_symbol(pc);
+        // Фильтруем дублирование подряд идущих одинаковых символов
+        if (frames.empty() || frames.back() != sym) {
+            frames.push_back(sym);
+        }
     }
 
     if (syscall_name && syscall_name[0] != '\0') {
@@ -167,7 +187,7 @@ static int aggwalk_cb(const dtrace_aggdata_t* data, void*) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Быстрое экранирование JSON
+// Экранирование JSON
 // ─────────────────────────────────────────────────────────────────────────────
 
 static std::string json_escape(const std::string& s) {
@@ -189,7 +209,7 @@ static std::string json_escape(const std::string& s) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Форматирование 1: ASCII Tree (Для человека)
+// ASCII Tree
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void print_ascii_tree(const std::shared_ptr<TreeNode>& node, const std::string& prefix, bool is_last) {
@@ -214,7 +234,7 @@ static void print_ascii_tree(const std::shared_ptr<TreeNode>& node, const std::s
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Форматирование 2: Clean Markdown (LLM)
+// Clean Markdown
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void print_markdown_tree(const std::shared_ptr<TreeNode>& node, int depth) {
@@ -240,7 +260,7 @@ static void print_markdown_format(const std::string& target_cmd) {
     std::cout << "- **Target**: `" << target_cmd << "`\n";
     std::cout << "- **PID**: `" << g_target << "`\n";
     std::cout << "- **Total Unique Syscalls**: `" << g_syscall_trees.size() << "`\n";
-    std::cout << "- **Symbol Cache Performance**: `" << g_cache_hits << " hits / " << g_cache_misses << " misses` ("
+    std::cout << "- **Symbol Cache**: `" << g_cache_hits << " hits / " << g_cache_misses << " misses` ("
               << (g_cache_hits + g_cache_misses > 0 ? (100.0 * g_cache_hits / (g_cache_hits + g_cache_misses)) : 0.0)
               << "% hit rate)\n\n";
 
@@ -269,7 +289,7 @@ static void print_markdown_format(const std::string& target_cmd) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Форматирование 3: Structured JSON (LLM / API)
+// Structured JSON
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void print_json_node(const std::shared_ptr<TreeNode>& node, int indent_level) {
@@ -449,7 +469,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Настройки буферов DTrace для максимальной производительности
     (void)dtrace_setopt(g_dtp, "destructive", nullptr);
     (void)dtrace_setopt(g_dtp, "quiet",       "1");
     (void)dtrace_setopt(g_dtp, "ustackframes", "16");
@@ -473,11 +492,16 @@ int main(int argc, char* argv[]) {
     }
 
     if (g_target == 0) {
+        // Подготовка к остановке дочернего процесса
         raise(SIGSTOP);
         execvp(target_program.c_str(), argv + arg_idx);
         std::cerr << "[!] execvp(): " << strerror(errno) << "\n";
         _exit(1);
     }
+
+    // FIX: Надёжная синхронизация процессов: ждём момента, когда дочерний процесс остановится на SIGSTOP
+    int stop_status = 0;
+    waitpid(g_target, &stop_status, WUNTRACED);
 
     char script[512];
     std::snprintf(script, sizeof(script), D_SCRIPT_TEMPLATE, (int)g_target);
@@ -503,18 +527,19 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Возобновляем дочерний процесс ПОСЛЕ компиляции и старта DTrace
     kill(g_target, SIGCONT);
 
     signal(SIGINT,  sig_handler);
     signal(SIGTERM, sig_handler);
 
-    while (!g_done) {
+    while (!g_done.load(std::memory_order_relaxed)) {
         dtrace_sleep(g_dtp);
 
         int status = 0;
         pid_t w = waitpid(g_target, &status, WNOHANG);
         if (w == g_target) {
-            g_done = true;
+            g_done.store(true, std::memory_order_relaxed);
         }
         dtrace_aggregate_snap(g_dtp);
     }
@@ -531,10 +556,10 @@ int main(int argc, char* argv[]) {
     if (format == OutputFormat::TREE) {
         auto total_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(walk_end - start_time).count();
         auto walk_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(walk_end - walk_start).count();
-        std::cout << "[*] Профилирование и узкие места (Bottleneck Metrics):\n";
-        std::cout << "    - Общее время обработки: " << total_elapsed << " мс\n";
-        std::cout << "    - Обход и резолвинг стеков: " << walk_elapsed << " мкс\n";
-        std::cout << "    - Кеш символов (Symbol Cache): " << g_cache_hits << " hits / " << g_cache_misses << " misses\n";
+        std::cout << "[*] Профилирование и метрики:\n";
+        std::cout << "    - Общее время: " << total_elapsed << " мс\n";
+        std::cout << "    - Сбор стеков: " << walk_elapsed << " мкс\n";
+        std::cout << "    - Кеш символов: " << g_cache_hits << " hits / " << g_cache_misses << " misses\n";
     }
 
     dtrace_close(g_dtp);

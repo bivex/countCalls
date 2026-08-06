@@ -19,6 +19,7 @@
 #include <iomanip>
 #include <cstring>
 #include <cerrno>
+#include <atomic>
 
 #include <unistd.h>
 #include <signal.h>
@@ -31,9 +32,9 @@ enum class OutputFormat {
     JSON        // JSON объект для LLM
 };
 
-static dtrace_hdl_t* g_dtp    = nullptr;
-static pid_t         g_target = -1;
-static volatile bool g_done   = false;
+static dtrace_hdl_t*     g_dtp    = nullptr;
+static pid_t             g_target = -1;
+static std::atomic<bool> g_done{false};
 
 static std::map<std::string, uint64_t> g_counts;
 
@@ -46,8 +47,7 @@ syscall:::entry
 )";
 
 static void sig_handler(int) {
-    g_done = true;
-    if (g_dtp) dtrace_stop(g_dtp);
+    g_done.store(true, std::memory_order_relaxed);
 }
 
 static int aggwalk_cb(const dtrace_aggdata_t* data, void*) {
@@ -221,6 +221,10 @@ int main(int argc, char* argv[]) {
         _exit(1);
     }
 
+    // Синхронизация дочернего процесса
+    int stop_status = 0;
+    waitpid(g_target, &stop_status, WUNTRACED);
+
     char script[512];
     std::snprintf(script, sizeof(script), D_SCRIPT_TEMPLATE, (int)g_target);
 
@@ -250,12 +254,12 @@ int main(int argc, char* argv[]) {
     signal(SIGINT,  sig_handler);
     signal(SIGTERM, sig_handler);
 
-    while (!g_done) {
+    while (!g_done.load(std::memory_order_relaxed)) {
         dtrace_sleep(g_dtp);
         int status = 0;
         pid_t w = waitpid(g_target, &status, WNOHANG);
         if (w == g_target) {
-            g_done = true;
+            g_done.store(true, std::memory_order_relaxed);
         }
         dtrace_aggregate_snap(g_dtp);
     }
