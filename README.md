@@ -4,6 +4,14 @@
 
 ---
 
+## 📌 Состав проекта
+
+1. **`syscall_counter`** — Подсчитывает общее количество и процентное соотношение каждого системного вызова (syscall).
+2. **`syscall_callgraph`** — Захватывает стек вызовов пользователей (`ustack`) и строит **обратное дерево вызовов (Reverse Call Graph)** в консоли (ASCII/Markdown/JSON/Graphviz DOT).
+3. **`demo_app`** — Демонстрационная программа, выполняющая файловые операции (`open`, `write`, `read`, `close`, `unlink`) и управление памятью (`mmap`, `mprotect`, `munmap`).
+
+---
+
 ## 🚀 Форматы вывода
 
 Каждая утилита поддерживает флаги для удобного взаимодействия с LLM (Large Language Models):
@@ -16,69 +24,21 @@
 
 ---
 
-## 🛠 Использование
+## 🛠 Использование и Тестирование
 
-### 1. Обратный граф вызовов (`syscall_callgraph`)
-
-#### Вывод в формате JSON (для LLM):
+### Запуск демо-программы через `syscall_counter`:
 ```bash
-sudo ./syscall_callgraph --json /bin/ls -la /tmp
-```
-**Пример вывода:**
-```json
-{
-  "target": "/bin/ls",
-  "pid": 45120,
-  "unique_syscalls": 23,
-  "syscalls": [
-    {
-      "syscall": "open_nocancel",
-      "total_calls": 18,
-      "tree": [
-        {
-          "name": "libsystem_kernel.dylib`__open_nocancel",
-          "count": 18,
-          "children": [
-            {
-              "name": "libsystem_info.dylib`si_open",
-              "count": 12,
-              "children": [
-                {
-                  "name": "/bin/ls`main",
-                  "count": 12
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
+sudo ./syscall_counter ./demo_app
 ```
 
-#### Вывод в формате Markdown (для LLM):
+### Запуск демо-программы через `syscall_callgraph` (в формате JSON):
 ```bash
-sudo ./syscall_callgraph --markdown /bin/ls -la /tmp
+sudo ./syscall_callgraph --json ./demo_app
 ```
 
-#### Вывод в формате ASCII дерева (в терминал):
+### Запуск демо-программы через `syscall_callgraph` (в формате Markdown):
 ```bash
-sudo ./syscall_callgraph --tree /bin/ls -la /tmp
-```
-
----
-
-### 2. Сводная статистика системных вызовов (`syscall_counter`)
-
-#### Вывод в формате JSON (для LLM):
-```bash
-sudo ./syscall_counter --json /bin/ls -la /tmp
-```
-
-#### Вывод в формате Markdown (для LLM):
-```bash
-sudo ./syscall_counter --markdown /bin/ls -la /tmp
+sudo ./syscall_callgraph --markdown ./demo_app
 ```
 
 ---
