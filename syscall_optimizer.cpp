@@ -1,15 +1,19 @@
 /**
  * syscall_optimizer.cpp
  *
- * Анализатор и профилировщик анти-паттернов системных вызовов на macOS.
- * Находит узкие места, приводящие к избыточным системным вызовам (Syscall Thrashing),
- * и выдает конкретные рекомендации по оптимизации алгоритмов.
+ * Полный анализатор 10 категорий анти-паттернов системных вызовов на macOS.
  *
- * Обнаруживаемые анти-паттерны:
- * 1. [UNBUFFERED_IO] Небуферизованный В/В (частые read/write малого размера)
- * 2. [MEMORY_THRASHING] Высокая частота mmap/munmap (отсутствие Memory Pool / Arena)
- * 3. [STAT_SPAM] Повторные вызовы stat/fstatat для одних и тех же файлов
- * 4. [TIME_POLLING] Высокая частота gettimeofday/clock_gettime в циклах
+ * Категории анти-паттернов:
+ * 1.  [UNBUFFERED_IO]        Небуферизованный В/В (побайтовые read/write)
+ * 2.  [MEMORY_THRASHING]     Частое выделение виртуальной памяти (mmap/munmap/mprotect)
+ * 3.  [STAT_SPAM]            Спам метаданными файлов (stat/fstatat/getattrlist)
+ * 4.  [TIME_POLLING]         Активный опрос времени и короткие таймеры (clock_gettime/nanosleep)
+ * 5.  [THREAD_SPAM]          Спам созданием сырых потоков (pthread_create/bsdthread_create)
+ * 6.  [SOCKET_RECONNECT_SPAM]Пересоздание сокетов на каждый запрос (socket/connect/close)
+ * 7.  [LOCK_CONTENTION]      Блокировки ядра и контеншн (ulock_wait/semwait)
+ * 8.  [PROCESS_FORK_SPAM]    Частый спавн дочерних процессов (fork/execve)
+ * 9.  [FD_CHURN]             Частые переоткрытия дескрипторов файлов (open/close)
+ * 10. [SIGNAL_SPAM]          Сигналы управления потоком (kill/pthread_kill/sigprocmask)
  *
  * Сборка:
  *   clang++ -std=c++17 -O2 -o syscall_optimizer syscall_optimizer.cpp -ldtrace
@@ -41,28 +45,20 @@ enum class OutputFormat {
     JSON        // Формат JSON для автоматического анализа в CI/CD и LLM
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Структуры для анализа анти-паттернов
-// ─────────────────────────────────────────────────────────────────────────────
-
 struct SyscallStats {
     std::string name;
     uint64_t count = 0;
-    std::unordered_map<std::string, uint64_t> call_stacks; // Stack trace -> Count
+    std::unordered_map<std::string, uint64_t> call_stacks;
 };
 
 struct AntiPatternIssue {
-    std::string rule_id;       // UNBUFFERED_IO, MEMORY_THRASHING и т.д.
+    std::string rule_id;       // Идентификатор правила
     std::string title;         // Название проблемы
-    std::string description;   // Описание
-    std::string recommendation;// Рекомендация по оптимизации алгоритма
-    uint64_t impact_count = 0; // Сколько сисколов можно сэкономить
-    std::string top_stack;     // Стековый кадр, из которого идут вызовы
+    std::string description;   // Детальное описание
+    std::string recommendation;// Конкретное решение
+    uint64_t impact_count = 0; // Потенциал экономии сисколов
+    std::string top_stack;     // Стековый кадр из вызова
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Глобальное состояние
-// ─────────────────────────────────────────────────────────────────────────────
 
 static dtrace_hdl_t*     g_dtp    = nullptr;
 static pid_t             g_target = -1;
@@ -155,7 +151,7 @@ static int aggwalk_cb(const dtrace_aggdata_t* data, void*) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Алгоритм анализа анти-паттернов системных вызовов
+// Детектор 10 категорий анти-паттернов системных вызовов
 // ─────────────────────────────────────────────────────────────────────────────
 
 static std::vector<AntiPatternIssue> analyze_anti_patterns(uint64_t& total_syscalls) {
@@ -168,120 +164,157 @@ static std::vector<AntiPatternIssue> analyze_anti_patterns(uint64_t& total_sysca
 
     if (total_syscalls == 0) return issues;
 
-    // 1. Проверка на небуферизованный / частый ввод-вывод (read / write / open / close)
-    uint64_t io_calls = 0;
-    std::string top_io_stack;
-    uint64_t max_io_stack_count = 0;
+    // Вспомогательная функция поиска стека с максимальным числом вызовов
+    auto find_top_stack = [](const std::vector<std::string>& keywords) -> std::pair<uint64_t, std::string> {
+        uint64_t total = 0;
+        uint64_t max_cnt = 0;
+        std::string top_stk;
 
-    for (const auto& [name, stat] : g_stats) {
-        if (name.find("read") != std::string::npos || name.find("write") != std::string::npos ||
-            name.find("open") != std::string::npos || name.find("close") != std::string::npos) {
-            io_calls += stat.count;
-            for (const auto& [stk, cnt] : stat.call_stacks) {
-                if (cnt > max_io_stack_count) {
-                    max_io_stack_count = cnt;
-                    top_io_stack = stk;
+        for (const auto& [name, stat] : g_stats) {
+            for (const auto& kw : keywords) {
+                if (name.find(kw) != std::string::npos) {
+                    total += stat.count;
+                    for (const auto& [stk, cnt] : stat.call_stacks) {
+                        if (cnt > max_cnt) {
+                            max_cnt = cnt;
+                            top_stk = stk;
+                        }
+                    }
+                    break;
                 }
             }
         }
-    }
+        return {total, top_stk};
+    };
 
+    // 1. UNBUFFERED_IO
+    auto [io_calls, io_stack] = find_top_stack({"read", "write"});
     if (io_calls >= 20 && (io_calls * 100.0 / total_syscalls) > 25.0) {
         AntiPatternIssue issue;
         issue.rule_id = "UNBUFFERED_IO";
         issue.title = "Избыточный / Небуферизованный Ввод-Вывод (Unbuffered I/O Loop)";
-        issue.description = "Обнаружено " + std::to_string(io_calls) + " операций В/В (" + 
-                            std::to_string((int)(io_calls * 100.0 / total_syscalls)) + "% всех системных вызовов).";
-        issue.recommendation = "Используйте буферизованные потоки (std::vector<char> буфер, fread/fwrite или fstream с увеличенным буфером) вместо побайтового или мелкопорционного чтении/записи.";
+        issue.description = "Зафиксировано " + std::to_string(io_calls) + " мелких вызовов чтения/записи (" + 
+                            std::to_string((int)(io_calls * 100.0 / total_syscalls)) + "% всех вызовов ядра).";
+        issue.recommendation = "Накапливайте данные в буфере памяти (std::vector<char>, fstream, MemoryStream) и делайте запись пачкой за один вызов write().";
         issue.impact_count = io_calls > 5 ? (io_calls - 5) : io_calls;
-        issue.top_stack = top_io_stack;
+        issue.top_stack = io_stack;
         issues.push_back(issue);
     }
 
-    // 2. Проверка на Memory Thrashing (частый mmap / munmap / mprotect)
-    uint64_t mem_calls = 0;
-    std::string top_mem_stack;
-    uint64_t max_mem_stack_count = 0;
-
-    for (const auto& [name, stat] : g_stats) {
-        if (name.find("mmap") != std::string::npos || name.find("munmap") != std::string::npos ||
-            name.find("mprotect") != std::string::npos || name.find("madvise") != std::string::npos) {
-            mem_calls += stat.count;
-            for (const auto& [stk, cnt] : stat.call_stacks) {
-                if (cnt > max_mem_stack_count) {
-                    max_mem_stack_count = cnt;
-                    top_mem_stack = stk;
-                }
-            }
-        }
-    }
-
+    // 2. MEMORY_THRASHING
+    auto [mem_calls, mem_stack] = find_top_stack({"mmap", "munmap", "mprotect", "madvise"});
     if (mem_calls >= 15 && (mem_calls * 100.0 / total_syscalls) > 20.0) {
         AntiPatternIssue issue;
         issue.rule_id = "MEMORY_THRASHING";
-        issue.title = "Избыточное выделение виртуальной памяти (Memory Thrashing)";
-        issue.description = "Обнаружено " + std::to_string(mem_calls) + " обращений к подсистеме виртуальной памяти (mmap/munmap/mprotect).";
-        issue.recommendation = "Внедрите Арена-Аллокатор (Memory Pool / Arena Allocator) или переиспользуйте выделенные блоки памяти, избегая постоянных запросов к ядру.";
+        issue.title = "Частые запросы к подсистеме виртуальной памяти (Memory Thrashing)";
+        issue.description = "Зафиксировано " + std::to_string(mem_calls) + " вызовов выделения/освобождения страниц ядра (mmap/munmap/mprotect).";
+        issue.recommendation = "Используйте Арена-Аллокатор (Arena / Memory Pool Allocator) или переиспользуйте выделенные массивы вместо частых запросов к ОС.";
         issue.impact_count = mem_calls > 3 ? (mem_calls - 3) : mem_calls;
-        issue.top_stack = top_mem_stack;
+        issue.top_stack = mem_stack;
         issues.push_back(issue);
     }
 
-    // 3. Проверка на Stat Spam (повторная проверка метаданных файлов)
-    uint64_t stat_calls = 0;
-    std::string top_stat_stack;
-    uint64_t max_stat_stack_count = 0;
-
-    for (const auto& [name, stat] : g_stats) {
-        if (name.find("stat") != std::string::npos || name.find("getattr") != std::string::npos) {
-            stat_calls += stat.count;
-            for (const auto& [stk, cnt] : stat.call_stacks) {
-                if (cnt > max_stat_stack_count) {
-                    max_stat_stack_count = cnt;
-                    top_stat_stack = stk;
-                }
-            }
-        }
-    }
-
+    // 3. STAT_SPAM
+    auto [stat_calls, stat_stack] = find_top_stack({"stat", "getattr"});
     if (stat_calls >= 15 && (stat_calls * 100.0 / total_syscalls) > 15.0) {
         AntiPatternIssue issue;
         issue.rule_id = "STAT_SPAM";
-        issue.title = "Избыточная проверка метаданных файлов (VFS Stat Overhead)";
-        issue.description = "Обнаружено " + std::to_string(stat_calls) + " вызовов проверки атрибутов файлов (stat/fstatat).";
-        issue.recommendation = "Кешируйте результаты проверки метаданных файлов в оперативной памяти или объединенно запрашивайте информацию за один проход.";
+        issue.title = "Спам запросами метаданных файлов (VFS Stat Overhead)";
+        issue.description = "Зафиксировано " + std::to_string(stat_calls) + " вызовов проверки атрибутов файлов (stat/fstatat/getattrlist).";
+        issue.recommendation = "Кешируйте атрибуты файлов в оперативной памяти или опрашивайте структуру директории единым проходом.";
         issue.impact_count = stat_calls > 3 ? (stat_calls - 3) : stat_calls;
-        issue.top_stack = top_stat_stack;
+        issue.top_stack = stat_stack;
         issues.push_back(issue);
     }
 
-    // 4. Проверка на Time / Polling Spam
-    uint64_t time_calls = 0;
-    std::string top_time_stack;
-    uint64_t max_time_stack_count = 0;
-
-    for (const auto& [name, stat] : g_stats) {
-        if (name.find("time") != std::string::npos || name.find("sleep") != std::string::npos ||
-            name.find("select") != std::string::npos || name.find("kevent") != std::string::npos ||
-            name.find("poll") != std::string::npos) {
-            time_calls += stat.count;
-            for (const auto& [stk, cnt] : stat.call_stacks) {
-                if (cnt > max_time_stack_count) {
-                    max_time_stack_count = cnt;
-                    top_time_stack = stk;
-                }
-            }
-        }
-    }
-
+    // 4. TIME_POLLING
+    auto [time_calls, time_stack] = find_top_stack({"time", "sleep", "select", "kevent", "poll"});
     if (time_calls >= 20 && (time_calls * 100.0 / total_syscalls) > 20.0) {
         AntiPatternIssue issue;
         issue.rule_id = "TIME_POLLING";
-        issue.title = "Избыточный опрос времени и активное ожидание (High Polling Overhead)";
-        issue.description = "Обнаружено " + std::to_string(time_calls) + " вызовов запроса времени или ожидания таймера.";
-        issue.recommendation = "Замените активное ожидание (busy wait / polling) на события (Event-Driven architecture / Condition Variable) или кешируйте текущую метку времени.";
+        issue.title = "Активное ожидание и частый опрос времени (Busy Wait / Time Polling)";
+        issue.description = "Зафиксировано " + std::to_string(time_calls) + " вызовов запроса времени или таймеров.";
+        issue.recommendation = "Перейдите на Event-Driven модель (Condition Variable, epoll/kevent) вместо циклов активного ожидания.";
         issue.impact_count = time_calls > 5 ? (time_calls - 5) : time_calls;
-        issue.top_stack = top_time_stack;
+        issue.top_stack = time_stack;
+        issues.push_back(issue);
+    }
+
+    // 5. THREAD_SPAM
+    auto [thread_calls, thread_stack] = find_top_stack({"bsdthread_create", "pthread_create", "workq"});
+    if (thread_calls >= 10) {
+        AntiPatternIssue issue;
+        issue.rule_id = "THREAD_SPAM";
+        issue.title = "Избыточное создание сырых потоков (Thread Creation Overhead)";
+        issue.description = "Зафиксировано " + std::to_string(thread_calls) + " системных вызовов порождения потоков ядра.";
+        issue.recommendation = "Используйте Пул потоков (Thread Pool / Task Scheduler) вместо создания и уничтожения сырых ОС-потоков на каждую задачу.";
+        issue.impact_count = thread_calls > 2 ? (thread_calls - 2) : thread_calls;
+        issue.top_stack = thread_stack;
+        issues.push_back(issue);
+    }
+
+    // 6. SOCKET_RECONNECT_SPAM
+    auto [sock_calls, sock_stack] = find_top_stack({"connect", "bind", "listen"});
+    if (sock_calls >= 10) {
+        AntiPatternIssue issue;
+        issue.rule_id = "SOCKET_RECONNECT_SPAM";
+        issue.title = "Пересоздание сетевых соединений (Socket Thrashing)";
+        issue.description = "Зафиксировано " + std::to_string(sock_calls) + " вызовов установления сетевых соединений.";
+        issue.recommendation = "Используйте Socket Connection Pool или HTTP Keep-Alive для постоянного переиспользования открытых соединений.";
+        issue.impact_count = sock_calls > 2 ? (sock_calls - 2) : sock_calls;
+        issue.top_stack = sock_stack;
+        issues.push_back(issue);
+    }
+
+    // 7. LOCK_CONTENTION
+    auto [lock_calls, lock_stack] = find_top_stack({"ulock_wait", "semwait", "mutex"});
+    if (lock_calls >= 15) {
+        AntiPatternIssue issue;
+        issue.rule_id = "LOCK_CONTENTION";
+        issue.title = "Контеншн и блокировки ядра (Kernel Lock Contention)";
+        issue.description = "Зафиксировано " + std::to_string(lock_calls) + " вызовов перехода потока в состояние ожидания ядра.";
+        issue.recommendation = "Уменьшите гранулярность мьютексов, перейдите на Lock-Free структуры данных или Атомики (std::atomic, MPMC queue).";
+        issue.impact_count = lock_calls > 3 ? (lock_calls - 3) : lock_calls;
+        issue.top_stack = lock_stack;
+        issues.push_back(issue);
+    }
+
+    // 8. PROCESS_FORK_SPAM
+    auto [fork_calls, fork_stack] = find_top_stack({"fork", "vfork", "execve"});
+    if (fork_calls >= 5) {
+        AntiPatternIssue issue;
+        issue.rule_id = "PROCESS_FORK_SPAM";
+        issue.title = "Частый спавн дочерних процессов (Process Fork Overhead)";
+        issue.description = "Зафиксировано " + std::to_string(fork_calls) + " тяжелых вызовов создания дочерних процессов OS.";
+        issue.recommendation = "Выполняйте код внутри текущего процесса через библиотеки / worker-демоны вместо спавна новых процессов.";
+        issue.impact_count = fork_calls > 1 ? (fork_calls - 1) : fork_calls;
+        issue.top_stack = fork_stack;
+        issues.push_back(issue);
+    }
+
+    // 9. FD_CHURN
+    auto [fd_calls, fd_stack] = find_top_stack({"open", "close"});
+    if (fd_calls >= 30 && (fd_calls * 100.0 / total_syscalls) > 25.0) {
+        AntiPatternIssue issue;
+        issue.rule_id = "FD_CHURN";
+        issue.title = "Частое переоткрытие дескрипторов файлов (Descriptor Churn)";
+        issue.description = "Зафиксировано " + std::to_string(fd_calls) + " вызовов открытия/закрытия файлов.";
+        issue.recommendation = "Удерживайте открытые файловые дескрипторы для частых операций вместо постоянного цикла open() / close().";
+        issue.impact_count = fd_calls > 5 ? (fd_calls - 5) : fd_calls;
+        issue.top_stack = fd_stack;
+        issues.push_back(issue);
+    }
+
+    // 10. SIGNAL_SPAM
+    auto [sig_calls, sig_stack] = find_top_stack({"kill", "sigprocmask", "pthread_kill"});
+    if (sig_calls >= 10) {
+        AntiPatternIssue issue;
+        issue.rule_id = "SIGNAL_SPAM";
+        issue.title = "Избыточная межпроцессная сигнализация (Signal Overhead)";
+        issue.description = "Зафиксировано " + std::to_string(sig_calls) + " вызовов отправки и маскирования сигналов ОС.";
+        issue.recommendation = "Используйте атомарные флаги или каналы обмена сообщениями вместо межпотоковых сигналов.";
+        issue.impact_count = sig_calls > 2 ? (sig_calls - 2) : sig_calls;
+        issue.top_stack = sig_stack;
         issues.push_back(issue);
     }
 
@@ -289,7 +322,7 @@ static std::vector<AntiPatternIssue> analyze_anti_patterns(uint64_t& total_sysca
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Вывод результатов анализа
+// Вывод результатов
 // ─────────────────────────────────────────────────────────────────────────────
 
 static std::string json_escape(const std::string& s) {

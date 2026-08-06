@@ -1,7 +1,12 @@
 # Executables
 syscall_counter
 syscall_callgraph
+syscall_optimizer
 demo_app
+unbuffered_demo
+buffered_demo
+memory_thrashing_demo
+thread_spam_demo
 
 # Avalonia Build output
 **/bin/

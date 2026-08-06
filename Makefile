@@ -2,7 +2,7 @@ CXX      := clang++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra
 LDFLAGS  := -ldtrace
 
-TARGETS  := syscall_counter syscall_callgraph syscall_optimizer demo_app unbuffered_demo buffered_demo
+TARGETS  := syscall_counter syscall_callgraph syscall_optimizer demo_app unbuffered_demo buffered_demo memory_thrashing_demo thread_spam_demo
 
 .PHONY: all clean test compare
 
@@ -25,6 +25,12 @@ unbuffered_demo: unbuffered_demo.cpp
 
 buffered_demo: buffered_demo.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $<
+
+memory_thrashing_demo: memory_thrashing_demo.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $<
+
+thread_spam_demo: thread_spam_demo.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< -lpthread
 
 clean:
 	rm -f $(TARGETS) *.dot
