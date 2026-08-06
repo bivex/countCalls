@@ -2,3 +2,5 @@ syscall_counter
 *.o
 *.dSYM/
 .DS_Store
+syscall_callgraph_asan
+syscall_counter_asan

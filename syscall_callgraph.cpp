@@ -562,6 +562,10 @@ int main(int argc, char* argv[]) {
         std::cout << "    - Кеш символов: " << g_cache_hits << " hits / " << g_cache_misses << " misses\n";
     }
 
+    // Освобождаем память дерева и кеша символов до dtrace_close
+    g_syscall_trees.clear();
+    g_symbol_cache.clear();
+
     dtrace_close(g_dtp);
 
     if (kill(g_target, 0) == 0) {
