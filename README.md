@@ -1,94 +1,92 @@
-# syscall_counter & syscall_callgraph
+# macOS Syscall Tracing & Call Graph Tools
 
-Инструменты на C++ для анализа и построения **обратного графа вызовов (Reverse Call Graph)** системных вызовов процесса на macOS с использованием DTrace API.
-
----
-
-## 📌 Компоненты
-
-1. **`syscall_counter`** — Подсчитывает общее количество и процентное соотношение каждого системного вызова (syscall).
-2. **`syscall_callgraph`** — Захватывает стек вызовов пользователей (`ustack`) и строит **обратное дерево вызовов (Reverse Call Graph)** в консоли, показывая цепь функций (функций библиотеки и функций пользователя), которые привели к каждому системному вызову, а также экспортирует граф в формат **Graphviz DOT** (`callgraph.dot`).
+Инструменты на C++ для анализа системных вызовов процесса на macOS через DTrace API с поддержкой форматов вывода для **LLM** (JSON / Markdown) и человека (ASCII Tree / Table / Graphviz).
 
 ---
 
-## 🛠 Требования
+## 🚀 Форматы вывода
 
-- macOS (macOS Big Sur, Monterey, Ventura, Sonoma, Sequoia и т.д.)
-- Компилятор `clang++` с поддержкой C++17
-- Права суперпользователя (`sudo`)
+Каждая утилита поддерживает флаги для удобного взаимодействия с LLM (Large Language Models):
+
+| Флаг | Формат | Описание |
+|---|---|---|
+| `--json` | **JSON** | Чистый структурированный JSON для парсинга и передачи в LLM API |
+| `--markdown` / `--llm` | **Markdown** | Чистый список в формате Markdown (без ASCII-рамки) |
+| `--tree` / `--table` | **ASCII** | Табличный или древовидный вид для человека в терминале |
 
 ---
 
-## 🚀 Сборка
+## 🛠 Использование
+
+### 1. Обратный граф вызовов (`syscall_callgraph`)
+
+#### Вывод в формате JSON (для LLM):
+```bash
+sudo ./syscall_callgraph --json /bin/ls -la /tmp
+```
+**Пример вывода:**
+```json
+{
+  "target": "/bin/ls",
+  "pid": 45120,
+  "unique_syscalls": 23,
+  "syscalls": [
+    {
+      "syscall": "open_nocancel",
+      "total_calls": 18,
+      "tree": [
+        {
+          "name": "libsystem_kernel.dylib`__open_nocancel",
+          "count": 18,
+          "children": [
+            {
+              "name": "libsystem_info.dylib`si_open",
+              "count": 12,
+              "children": [
+                {
+                  "name": "/bin/ls`main",
+                  "count": 12
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### Вывод в формате Markdown (для LLM):
+```bash
+sudo ./syscall_callgraph --markdown /bin/ls -la /tmp
+```
+
+#### Вывод в формате ASCII дерева (в терминал):
+```bash
+sudo ./syscall_callgraph --tree /bin/ls -la /tmp
+```
+
+---
+
+### 2. Сводная статистика системных вызовов (`syscall_counter`)
+
+#### Вывод в формате JSON (для LLM):
+```bash
+sudo ./syscall_counter --json /bin/ls -la /tmp
+```
+
+#### Вывод в формате Markdown (для LLM):
+```bash
+sudo ./syscall_counter --markdown /bin/ls -la /tmp
+```
+
+---
+
+## ⚙️ Сборка
 
 ```bash
 make
-```
-
-Будут собраны утилиты `syscall_counter` и `syscall_callgraph`.
-
----
-
-## 💻 Использование
-
-### 1. Подсчёт системных вызовов (`syscall_counter`)
-
-```bash
-sudo ./syscall_counter /bin/ls -la /tmp
-```
-
-### 2. Построение Обратного Графа Вызовов (`syscall_callgraph`)
-
-```bash
-sudo ./syscall_callgraph /bin/ls -la /tmp
-```
-
----
-
-## 📊 Пример вывода обратного графа (`syscall_callgraph`)
-
-```text
-===============================================================
-       ОБРАТНЫЙ ГРАФ / ДЕРЕВО ВЫЗОВОВ (REVERSE CALL GRAPH)      
-       [ Syscall -> Calling Stack Frames -> Main / Caller ]     
-===============================================================
-
-SYSCALL: open_nocancel (всего: 18 вызовов)
-├── libsystem_kernel.dylib`__open_nocancel [18 calls]
-│   └── libsystem_info.dylib`si_open [12 calls]
-│       └── libsystem_info.dylib`si_module_config [12 calls]
-│           └── /bin/ls`main [12 calls]
-│   └── libsystem_c.dylib`opendir [6 calls]
-│       └── /bin/ls`printcol [6 calls]
-
-SYSCALL: read (всего: 87 вызовов)
-├── libsystem_kernel.dylib`read [87 calls]
-│   └── libsystem_c.dylib`__srefill [80 calls]
-│       └── libsystem_c.dylib`fgets [80 calls]
-│           └── /bin/ls`main [80 calls]
-
-[+] Экспортирован граф вызовов в файл: callgraph.dot
-```
-
----
-
-## 🎨 Визуализация графа (Graphviz)
-
-Сгенерированный файл `callgraph.dot` можно визуализировать в SVG/PNG с помощью утилиты `dot`:
-
-```bash
-brew install graphviz
-dot -Tpng callgraph.dot -o callgraph.png
-```
-
----
-
-## ⚠️ Замечания по безопасности (SIP)
-
-На macOS DTrace подпадает под ограничения System Integrity Protection (SIP). В случае проблем с доступом DTrace может потребоваться включить разрешение для DTrace в режиме восстановления (Recovery Mode):
-
-```bash
-csrutil enable --without dtrace
 ```
 
 ---
