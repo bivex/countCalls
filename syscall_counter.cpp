@@ -200,6 +200,7 @@ int main(int argc, char* argv[]) {
 
     (void)dtrace_setopt(g_dtp, "destructive", nullptr);
     (void)dtrace_setopt(g_dtp, "quiet",       "1");
+    (void)dtrace_setopt(g_dtp, "bufsize",     "4m");
     (void)dtrace_setopt(g_dtp, "aggrate",     "10ms");
     (void)dtrace_setopt(g_dtp, "switchrate",  "10ms");
 
@@ -244,7 +245,7 @@ int main(int argc, char* argv[]) {
 
     dtrace_proginfo_t info{};
     if (dtrace_program_exec(g_dtp, prog, &info) != 0 || dtrace_go(g_dtp) != 0) {
-        std::cerr << "[!] dtrace error\n";
+        std::cerr << "[!] dtrace error: " << dtrace_errmsg(g_dtp, dtrace_errno(g_dtp)) << "\n";
         kill(g_target, SIGKILL);
         waitpid(g_target, nullptr, 0);
         dtrace_close(g_dtp);
