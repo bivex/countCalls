@@ -1,18 +1,18 @@
 CXX      := clang++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra
 LDFLAGS  := -ldtrace
-TARGET   := syscall_counter
-SRC      := syscall_counter.cpp
 
-.PHONY: all clean run
+TARGETS  := syscall_counter syscall_callgraph
 
-all: $(TARGET)
+.PHONY: all clean
 
-$(TARGET): $(SRC)
+all: $(TARGETS)
+
+syscall_counter: syscall_counter.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
+
+syscall_callgraph: syscall_callgraph.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
-	rm -f $(TARGET)
-
-run: $(TARGET)
-	@echo "Использование: sudo ./$(TARGET) <program> [args...]"
+	rm -f $(TARGETS) *.dot

@@ -1,21 +1,23 @@
-# syscall_counter
+# syscall_counter & syscall_callgraph
 
-Инструмент на C++ для подсчёта и анализа системных вызовов (syscalls) процесса в macOS с использованием DTrace API.
+Инструменты на C++ для анализа и построения **обратного графа вызовов (Reverse Call Graph)** системных вызовов процесса на macOS с использованием DTrace API.
 
-## 📌 Описание
+---
 
-Программа запускает указанную утилиту или исполняемый файл в качестве дочернего процесса, подключается к нему через API библиотеки `libdtrace` и в режиме реального времени подсчитывает количество каждого типа системного вызова (syscall).
+## 📌 Компоненты
 
-По завершении (или нажатии `Ctrl+C`) выводится отсортированная сводная таблица с указанием:
-- Имени системного вызова
-- Количества вызовов
-- Процентной доли от общего числа вызовов
+1. **`syscall_counter`** — Подсчитывает общее количество и процентное соотношение каждого системного вызова (syscall).
+2. **`syscall_callgraph`** — Захватывает стек вызовов пользователей (`ustack`) и строит **обратное дерево вызовов (Reverse Call Graph)** в консоли, показывая цепь функций (функций библиотеки и функций пользователя), которые привели к каждому системному вызову, а также экспортирует граф в формат **Graphviz DOT** (`callgraph.dot`).
+
+---
 
 ## 🛠 Требования
 
 - macOS (macOS Big Sur, Monterey, Ventura, Sonoma, Sequoia и т.д.)
 - Компилятор `clang++` с поддержкой C++17
-- Права суперпользователя (`sudo`) для доступа к DTrace
+- Права суперпользователя (`sudo`)
+
+---
 
 ## 🚀 Сборка
 
@@ -23,67 +25,73 @@
 make
 ```
 
-Или вручную:
+Будут собраны утилиты `syscall_counter` и `syscall_callgraph`.
 
-```bash
-clang++ -std=c++17 -O2 -Wall -Wextra -o syscall_counter syscall_counter.cpp -ldtrace
-```
+---
 
 ## 💻 Использование
 
-```bash
-sudo ./syscall_counter <программа> [аргументы...]
-```
-
-### Примеры
-
-Подсчёт системных вызовов при выполнении `ls -la /tmp`:
+### 1. Подсчёт системных вызовов (`syscall_counter`)
 
 ```bash
 sudo ./syscall_counter /bin/ls -la /tmp
 ```
 
-Подсчёт системных вызовов команды `curl`:
+### 2. Построение Обратного Графа Вызовов (`syscall_callgraph`)
 
 ```bash
-sudo ./syscall_counter /usr/bin/curl -s https://example.com
+sudo ./syscall_callgraph /bin/ls -la /tmp
 ```
 
-### Пример вывода
+---
+
+## 📊 Пример вывода обратного графа (`syscall_callgraph`)
 
 ```text
-[*] Запускаем: /bin/ls
-[*] Трассировка PID 41205… (Ctrl+C для досрочной остановки)
+===============================================================
+       ОБРАТНЫЙ ГРАФ / ДЕРЕВО ВЫЗОВОВ (REVERSE CALL GRAPH)      
+       [ Syscall -> Calling Stack Frames -> Main / Caller ]     
+===============================================================
 
+SYSCALL: open_nocancel (всего: 18 вызовов)
+├── libsystem_kernel.dylib`__open_nocancel [18 calls]
+│   └── libsystem_info.dylib`si_open [12 calls]
+│       └── libsystem_info.dylib`si_module_config [12 calls]
+│           └── /bin/ls`main [12 calls]
+│   └── libsystem_c.dylib`opendir [6 calls]
+│       └── /bin/ls`printcol [6 calls]
 
-[*] Процесс завершился с кодом 0
+SYSCALL: read (всего: 87 вызовов)
+├── libsystem_kernel.dylib`read [87 calls]
+│   └── libsystem_c.dylib`__srefill [80 calls]
+│       └── libsystem_c.dylib`fgets [80 calls]
+│           └── /bin/ls`main [80 calls]
 
-+--------------------------------------------------+
-|  Syscall                    Calls     %          |
-+--------------------------------------------------+
-| read                           87   34.5%        |
-| write                          62   24.6%        |
-| mmap                           30   11.9%        |
-| open_nocancel                  18    7.1%        |
-| stat64                         12    4.8%        |
-| ...                                              |
-+--------------------------------------------------+
-| TOTAL                         252  100.0%        |
-+--------------------------------------------------+
-
-Подсчитано уникальных syscall'ов: 23
+[+] Экспортирован граф вызовов в файл: callgraph.dot
 ```
+
+---
+
+## 🎨 Визуализация графа (Graphviz)
+
+Сгенерированный файл `callgraph.dot` можно визуализировать в SVG/PNG с помощью утилиты `dot`:
+
+```bash
+brew install graphviz
+dot -Tpng callgraph.dot -o callgraph.png
+```
+
+---
 
 ## ⚠️ Замечания по безопасности (SIP)
 
-На современных версиях macOS DTrace подпадает под ограничения System Integrity Protection (SIP). В случае возникновения ошибки доступа DTrace в некоторых конфигурациях может потребоваться ослабить ограничения SIP для DTrace:
+На macOS DTrace подпадает под ограничения System Integrity Protection (SIP). В случае проблем с доступом DTrace может потребоваться включить разрешение для DTrace в режиме восстановления (Recovery Mode):
 
-1. Перезагрузите Mac в режим восстановления (Recovery Mode).
-2. Откройте Терминал и выполните:
-   ```bash
-   csrutil enable --without dtrace
-   ```
-3. Перезагрузите Mac.
+```bash
+csrutil enable --without dtrace
+```
+
+---
 
 ## 📄 Лицензия
 
