@@ -1,6 +1,14 @@
+# Executables
 syscall_counter
+syscall_callgraph
+demo_app
+
+# Generated graph files
+*.dot
+*.png
+*.svg
+
+# Build & OS artifacts
 *.o
 *.dSYM/
 .DS_Store
-syscall_callgraph_asan
-syscall_counter_asan
